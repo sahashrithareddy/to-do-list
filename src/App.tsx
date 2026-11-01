@@ -38,7 +38,16 @@ type Task = {
   created_at: string;
   updated_at: string;
 };
-
+type Goal = {
+  id: string;
+  user_id: string;
+  title: string;
+  description: string;
+  target_date: string | null;
+  progress: number;
+  created_at: string;
+  updated_at: string;
+};
 type TaskForm = {
   title: string;
   description: string;
@@ -166,6 +175,11 @@ function AuthScreen({
 
 function Dashboard({ session }: { session: Session }) {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
+const [goalTitle, setGoalTitle] = useState('');
+const [goalDescription, setGoalDescription] = useState('');
+const [goalDate, setGoalDate] = useState('');
+const [goalProgress, setGoalProgress] = useState(0);
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState('');
   const [filter, setFilter] = useState<FilterValue>('all');
@@ -173,16 +187,46 @@ function Dashboard({ session }: { session: Session }) {
   const [showModal, setShowModal] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
+  const [activePage, setActivePage] = useState<'overview' | 'calendar' | 'goals'>('overview');
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
 
   useEffect(() => {
     async function loadTasks() {
-      const { data, error } = await supabase.from('tasks').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: false });
+
       if (error) setActionError('We could not load your tasks. Please refresh and try again.');
       else setTasks((data ?? []) as Task[]);
       setLoading(false);
     }
-    loadTasks();
-  }, []);
+
+    if (session?.user?.id) {
+      setLoading(true);
+      loadTasks();
+    }
+  }, [session?.user?.id]);
+  useEffect(() => {
+  async function loadGoals() {
+    const { data, error } = await supabase
+      .from('goals')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setActionError('Could not load goals.');
+    } else {
+      setGoals((data ?? []) as Goal[]);
+    }
+  }
+
+  if (session?.user?.id) {
+    loadGoals();
+  }
+}, [session?.user?.id]);
 
   const completed = tasks.filter((task) => task.status === 'completed').length;
   const pending = tasks.length - completed;
@@ -199,53 +243,409 @@ function Dashboard({ session }: { session: Session }) {
 
   async function saveTask(form: TaskForm) {
     setActionError('');
+    const payload = { ...form, due_date: form.due_date || null, user_id: session.user.id };
+
     if (editingTask) {
-      const { data, error } = await supabase.from('tasks').update({ ...form, due_date: form.due_date || null, updated_at: new Date().toISOString() }).eq('id', editingTask.id).select().maybeSingle();
-      if (error || !data) setActionError('That task could not be updated.');
-      else setTasks((current) => current.map((task) => task.id === editingTask.id ? data as Task : task));
+      const { data, error } = await supabase
+        .from('tasks')
+        .update({ ...payload, updated_at: new Date().toISOString() })
+        .eq('id', editingTask.id)
+        .eq('user_id', session.user.id)
+        .select()
+        .maybeSingle();
+
+      if (error || !data) {
+        setActionError('That task could not be updated.');
+        return;
+      }
+
+      setTasks((current) => current.map((task) => task.id === editingTask.id ? data as Task : task));
     } else {
-      const { data, error } = await supabase.from('tasks').insert({ ...form, due_date: form.due_date || null }).select().maybeSingle();
-      if (error || !data) setActionError('That task could not be created.');
-      else setTasks((current) => [data as Task, ...current]);
+      const { data, error } = await supabase
+        .from('tasks')
+        .insert(payload)
+        .select()
+        .maybeSingle();
+
+      if (error || !data) {
+        setActionError('That task could not be created.');
+        return;
+      }
+
+      setTasks((current) => [data as Task, ...current]);
     }
+
     setEditingTask(null);
     setShowModal(false);
   }
 
   async function toggleTask(task: Task) {
     const nextStatus: Status = task.status === 'completed' ? 'pending' : 'completed';
-    const { error } = await supabase.from('tasks').update({ status: nextStatus, updated_at: new Date().toISOString() }).eq('id', task.id);
+    const { error } = await supabase
+      .from('tasks')
+      .update({ status: nextStatus, updated_at: new Date().toISOString() })
+      .eq('id', task.id)
+      .eq('user_id', session.user.id);
+
     if (error) setActionError('The task status could not be changed.');
     else setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: nextStatus } : item));
   }
 
   async function deleteTask(id: string) {
-    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    const { error } = await supabase
+      .from('tasks')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', session.user.id);
+
     if (error) setActionError('The task could not be removed.');
     else setTasks((current) => current.filter((task) => task.id !== id));
   }
 
+  async function saveGoal() {
+    const title = goalTitle.trim();
+    if (!title) {
+      setActionError('Please enter a goal title.');
+      return;
+    }
+
+    setActionError('');
+    const { data, error } = await supabase
+      .from('goals')
+      .insert({
+        user_id: session.user.id,
+        title,
+        description: goalDescription.trim(),
+        target_date: goalDate || null,
+        progress: goalProgress,
+      })
+      .select()
+      .maybeSingle();
+
+    if (error || !data) {
+      setActionError('That goal could not be created.');
+      return;
+    }
+
+    setGoals((current) => [data as Goal, ...current]);
+    setGoalTitle('');
+    setGoalDescription('');
+    setGoalDate('');
+    setGoalProgress(0);
+  }
+
   async function signOut() { await supabase.auth.signOut(); }
 
-  return (
+    return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}>
-        <div className="brand brand-dark"><span className="brand-icon"><Check size={17} strokeWidth={3} /></span> Taskly</div>
-        <nav><span className="nav-label">Workspace</span><button className="nav-item active"><LayoutDashboard size={18} /> Overview</button><button className="nav-item"><CalendarDays size={18} /> Calendar <span className="nav-soon">Soon</span></button><button className="nav-item"><Target size={18} /> Goals <span className="nav-soon">Soon</span></button></nav>
-        <div className="sidebar-bottom"><div className="tip-card"><Sparkles size={17} /><strong>Stay focused</strong><p>Finish one important task before adding another.</p></div><button className="signout-button" onClick={signOut}><LogOut size={17} /> Sign out</button></div>
+        <div className="brand brand-dark">
+          <span className="brand-icon"><Check size={17} strokeWidth={3} /></span> Taskly
+        </div>
+
+        <nav>
+          <span className="nav-label">Workspace</span>
+
+          <button
+            className={`nav-item ${activePage === 'overview' ? 'active' : ''}`}
+            onClick={() => setActivePage('overview')}
+          >
+            <LayoutDashboard size={18} /> Overview
+          </button>
+
+          <button
+            className={`nav-item ${activePage === 'calendar' ? 'active' : ''}`}
+            onClick={() => setActivePage('calendar')}
+          >
+            <CalendarDays size={18} /> Calendar
+          </button>
+
+          <button
+            className={`nav-item ${activePage === 'goals' ? 'active' : ''}`}
+            onClick={() => setActivePage('goals')}
+          >
+            <Target size={18} /> Goals
+          </button>
+        </nav>
+
+        <div className="sidebar-bottom">
+          <div className="tip-card">
+            <Sparkles size={17} />
+            <strong>Stay focused</strong>
+            <p>Finish one important task before adding another.</p>
+          </div>
+          <button className="signout-button" onClick={signOut}>
+            <LogOut size={17} /> Sign out
+          </button>
+        </div>
       </aside>
-      {mobileNav && <button className="mobile-overlay" onClick={() => setMobileNav(false)} aria-label="Close menu" />}
+
+      {mobileNav && (
+        <button
+          className="mobile-overlay"
+          onClick={() => setMobileNav(false)}
+          aria-label="Close menu"
+        />
+      )}
+
       <main className="main-content">
-        <header className="topbar"><button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={21} /></button><div className="breadcrumb"><span>Workspace</span><span>/</span><strong>Overview</strong></div><div className="topbar-user"><div className="avatar">{firstName.charAt(0).toUpperCase()}</div><div><strong>{displayName}</strong><span>{session.user.email}</span></div></div></header>
+        <header className="topbar">
+          <button className="menu-button" onClick={() => setMobileNav(true)}>
+            <Menu size={21} />
+          </button>
+          <div className="breadcrumb">
+            <span>Workspace</span>
+            <span>/</span>
+            <strong>{activePage.charAt(0).toUpperCase() + activePage.slice(1)}</strong>
+          </div>
+          <div className="topbar-user">
+            <div className="avatar">{firstName.charAt(0).toUpperCase()}</div>
+            <div>
+              <strong>{displayName}</strong>
+              <span>{session.user.email}</span>
+            </div>
+          </div>
+        </header>
+
         <div className="content-wrap">
-          <section className="welcome-row"><div><span className="eyebrow">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</span><h1>Good morning, {firstName} <span className="wave">✦</span></h1><p>Here’s a quick look at your day.</p></div><button className="primary-button" onClick={() => { setEditingTask(null); setShowModal(true); }}><Plus size={18} /> New task</button></section>
-          {actionError && <div className="action-error">{actionError}<button onClick={() => setActionError('')}><X size={15} /></button></div>}
-          <section className="stats-grid"><StatCard icon={<ClipboardCheck size={19} />} label="Total tasks" value={tasks.length} tone="blue" /><StatCard icon={<Clock3 size={19} />} label="In progress" value={pending} tone="amber" /><StatCard icon={<CheckCircle2 size={19} />} label="Completed" value={completed} tone="green" /><StatCard icon={<CalendarDays size={19} />} label="Due today" value={dueToday} tone="rose" /></section>
-          <section className="progress-card"><div><span className="eyebrow">Your momentum</span><h2>{tasks.length ? `${Math.round((completed / tasks.length) * 100)}% complete` : 'A fresh start'}</h2><p>{tasks.length ? completed === tasks.length ? 'Everything is checked off. Beautiful work.' : `${pending} ${pending === 1 ? 'task' : 'tasks'} left to keep the momentum going.` : 'Add your first task and make today count.'}</p></div><div className="progress-ring" style={{ '--progress': `${tasks.length ? (completed / tasks.length) * 100 : 0}%` } as React.CSSProperties}><strong>{tasks.length ? Math.round((completed / tasks.length) * 100) : 0}<small>%</small></strong></div></section>
-          <section className="tasks-section"><div className="section-heading"><div><h2>My tasks</h2><p>Keep your day moving forward.</p></div><button className="more-button"><MoreHorizontal size={20} /></button></div><div className="task-toolbar"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks..." /></div><div className="filter-tabs"><Filter size={16} /><button className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')}>All <span>{tasks.length}</span></button><button className={filter === 'pending' ? 'selected' : ''} onClick={() => setFilter('pending')}>Open <span>{pending}</span></button><button className={filter === 'completed' ? 'selected' : ''} onClick={() => setFilter('completed')}>Done <span>{completed}</span></button></div></div>{loading ? <div className="empty-state"><div className="loading-dots"><i /><i /><i /></div><p>Gathering your tasks...</p></div> : visibleTasks.length ? <div className="task-list">{visibleTasks.map((task) => <TaskRow key={task.id} task={task} onToggle={toggleTask} onEdit={(item) => { setEditingTask(item); setShowModal(true); }} onDelete={deleteTask} />)}</div> : <EmptyState hasTasks={tasks.length > 0} onAdd={() => { setEditingTask(null); setShowModal(true); }} />}</section>
+          {activePage === 'overview' && (
+            <>
+              <section className="welcome-row">
+                <div>
+                  <span className="eyebrow">
+                    {new Date().toLocaleDateString('en-US', {
+                      weekday: 'long',
+                      month: 'long',
+                      day: 'numeric'
+                    })}
+                  </span>
+                  <h1>Good morning, {firstName} <span className="wave">✦</span></h1>
+                  <p>Here’s a quick look at your day.</p>
+                </div>
+                <button className="primary-button" onClick={() => {
+                  setEditingTask(null);
+                  setShowModal(true);
+                }}>
+                  <Plus size={18} /> New task
+                </button>
+              </section>
+
+              {actionError && (
+                <div className="action-error">
+                  {actionError}
+                  <button onClick={() => setActionError('')}><X size={15} /></button>
+                </div>
+              )}
+
+              <section className="stats-grid">
+                <StatCard icon={<ClipboardCheck size={19} />} label="Total tasks" value={tasks.length} tone="blue" />
+                <StatCard icon={<Clock3 size={19} />} label="In progress" value={pending} tone="amber" />
+                <StatCard icon={<CheckCircle2 size={19} />} label="Completed" value={completed} tone="green" />
+                <StatCard icon={<CalendarDays size={19} />} label="Due today" value={dueToday} tone="rose" />
+              </section>
+
+              <section className="progress-card">
+                <div>
+                  <span className="eyebrow">Your momentum</span>
+                  <h2>{tasks.length ? `${Math.round((completed / tasks.length) * 100)}% complete` : 'A fresh start'}</h2>
+                  <p>
+                    {tasks.length
+                      ? completed === tasks.length
+                        ? 'Everything is checked off. Beautiful work.'
+                        : `${pending} ${pending === 1 ? 'task' : 'tasks'} left to keep the momentum going.`
+                      : 'Add your first task and make today count.'}
+                  </p>
+                </div>
+                <div className="progress-ring" style={{ '--progress': `${tasks.length ? (completed / tasks.length) * 100 : 0}%` } as React.CSSProperties}>
+                  <strong>{tasks.length ? Math.round((completed / tasks.length) * 100) : 0}<small>%</small></strong>
+                </div>
+              </section>
+
+              <section className="tasks-section">
+                <div className="section-heading">
+                  <div>
+                    <h2>My tasks</h2>
+                    <p>Keep your day moving forward.</p>
+                  </div>
+                  <button className="more-button"><MoreHorizontal size={20} /></button>
+                </div>
+
+                <div className="task-toolbar">
+                  <div className="search-box">
+                    <Search size={17} />
+                    <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks..." />
+                  </div>
+                  <div className="filter-tabs">
+                    <Filter size={16} />
+                    <button className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')}>All <span>{tasks.length}</span></button>
+                    <button className={filter === 'pending' ? 'selected' : ''} onClick={() => setFilter('pending')}>Open <span>{pending}</span></button>
+                    <button className={filter === 'completed' ? 'selected' : ''} onClick={() => setFilter('completed')}>Done <span>{completed}</span></button>
+                  </div>
+                </div>
+
+                {loading ? (
+                  <div className="empty-state">
+                    <div className="loading-dots"><i /><i /><i /></div>
+                    <p>Gathering your tasks...</p>
+                  </div>
+                ) : visibleTasks.length ? (
+                  <div className="task-list">
+                    {visibleTasks.map((task) => (
+                      <TaskRow
+                        key={task.id}
+                        task={task}
+                        onToggle={toggleTask}
+                        onEdit={(item) => {
+                          setEditingTask(item);
+                          setShowModal(true);
+                        }}
+                        onDelete={deleteTask}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState
+                    hasTasks={tasks.length > 0}
+                    onAdd={() => {
+                      setEditingTask(null);
+                      setShowModal(true);
+                    }}
+                  />
+                )}
+              </section>
+            </>
+          )}
+
+          {activePage === 'calendar' && (
+  <CalendarView
+    tasks={tasks}
+    selectedDate={selectedDate}
+    onDateChange={setSelectedDate}
+    onAddTask={() => {
+      setEditingTask(null);
+      setShowModal(true);
+    }}
+  />
+)} 
+
+          {activePage === 'goals' && (
+  <section className="tasks-section">
+    <div className="section-heading">
+      <div>
+        <h2>My Goals</h2>
+        <p>Set targets and track your progress.</p>
+      </div>
+    </div>
+
+    <div className="goal-form">
+      <label>Goal title</label>
+      <input
+        value={goalTitle}
+        onChange={(e) => setGoalTitle(e.target.value)}
+        placeholder="e.g. Complete a project"
+      />
+
+      <label>Description</label>
+      <textarea
+        value={goalDescription}
+        onChange={(e) => setGoalDescription(e.target.value)}
+        placeholder="Describe your goal..."
+      />
+
+      <label>Target date</label>
+      <input
+        type="date"
+        value={goalDate}
+        onChange={(e) => setGoalDate(e.target.value)}
+      />
+
+      <button className="primary-button" onClick={saveGoal}>
+        <Plus size={18} /> Add Goal
+      </button>
+    </div>
+
+    <div className="goal-list">
+      {goals.length === 0 ? (
+        <div className="empty-state">
+          <Target size={25} />
+          <h3>No goals yet</h3>
+          <p>Create your first goal above.</p>
+        </div>
+      ) : (
+        goals.map((goal) => (
+          <div className="task-row" key={goal.id}>
+            <div className="task-main">
+              <h3>{goal.title}</h3>
+              <p>{goal.description}</p>
+              <p>Target: {goal.target_date || 'No target date'}</p>
+
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={goal.progress}
+                onChange={async (e) => {
+                  const progress = Number(e.target.value);
+                  const { error } = await supabase
+                    .from('goals')
+                    .update({ progress, updated_at: new Date().toISOString() })
+                    .eq('id', goal.id)
+                    .eq('user_id', session.user.id);
+
+                  if (error) {
+                    setActionError('Could not update goal progress.');
+                  } else {
+                    setGoals((current) =>
+                      current.map((item) =>
+                        item.id === goal.id ? { ...item, progress } : item
+                      )
+                    );
+                  }
+                }}
+              />
+
+              <strong>{goal.progress}% complete</strong>
+            </div>
+
+            <button
+              onClick={async () => {
+                const { error } = await supabase
+                  .from('goals')
+                  .delete()
+                  .eq('id', goal.id)
+                  .eq('user_id', session.user.id);
+
+                if (error) {
+                  setActionError('Could not delete goal.');
+                } else {
+                  setGoals((current) =>
+                    current.filter((item) => item.id !== goal.id)
+                  );
+                }
+              }}
+              aria-label="Delete goal"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))
+      )}
+    </div>
+  </section>
+)}
         </div>
       </main>
-      {showModal && <TaskModal task={editingTask} onClose={() => { setShowModal(false); setEditingTask(null); }} onSave={saveTask} />}
+
+      {showModal && (
+        <TaskModal
+          task={editingTask}
+          onClose={() => {
+            setShowModal(false);
+            setEditingTask(null);
+          }}
+          onSave={saveTask}
+        />
+      )}
     </div>
   );
 }
@@ -264,6 +664,70 @@ function TaskModal({ task, onClose, onSave }: { task: Task | null; onClose: () =
   function update<K extends keyof TaskForm>(key: K, value: TaskForm[K]) { setForm((current) => ({ ...current, [key]: value })); }
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); onSave(form); }
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="task-modal"><div className="modal-heading"><div><span className="eyebrow">{task ? 'Refine your plan' : 'Make it happen'}</span><h2>{task ? 'Edit task' : 'New task'}</h2></div><button onClick={onClose} className="close-button"><X size={20} /></button></div><form onSubmit={submit}><label>Task title<input required autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="What needs to be done?" /></label><label>Notes <span>Optional</span><textarea rows={3} value={form.description} onChange={(event) => update('description', event.target.value)} placeholder="Add a little context..." /></label><div className="form-grid"><label>Due date <span>Optional</span><input type="date" value={form.due_date} onChange={(event) => update('due_date', event.target.value)} /></label><label>Category<select value={form.category} onChange={(event) => update('category', event.target.value)}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label></div><label>Priority</label><div className="priority-picker">{(['low', 'medium', 'high'] as Priority[]).map((priority) => <button type="button" key={priority} className={form.priority === priority ? `active ${priority}` : ''} onClick={() => update('priority', priority)}><span className={`priority-dot ${priority}`} /> {priority.charAt(0).toUpperCase() + priority.slice(1)}</button>)}</div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button">{task ? 'Save changes' : 'Add task'} <ArrowRight size={16} /></button></div></form></section></div>;
+}
+function CalendarView({
+  tasks,
+  selectedDate,
+  onDateChange,
+  onAddTask,
+}: {
+  tasks: Task[];
+  selectedDate: string;
+  onDateChange: (date: string) => void;
+  onAddTask: () => void;
+}) {
+  const selectedTasks = tasks.filter(
+    (task) => task.due_date === selectedDate
+  );
+
+  return (
+    <section className="tasks-section">
+      <div className="section-heading">
+        <div>
+          <h2>My Calendar</h2>
+          <p>See what you need to get done.</p>
+        </div>
+        <button className="primary-button" onClick={onAddTask}>
+          <Plus size={18} /> New task
+        </button>
+      </div>
+
+      <label>
+        Select a date
+        <input
+          type="date"
+          value={selectedDate}
+          onChange={(event) => onDateChange(event.target.value)}
+        />
+      </label>
+
+      <h3>
+        Tasks for {new Date(`${selectedDate}T12:00:00`).toLocaleDateString(
+          'en-US',
+          { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }
+        )}
+      </h3>
+
+      {selectedTasks.length > 0 ? (
+        <div className="task-list">
+          {selectedTasks.map((task) => (
+            <div className="task-row" key={task.id}>
+              <div className="task-main">
+                <h3>{task.title}</h3>
+                <p>{task.status === 'completed' ? 'Completed' : 'Pending'}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">
+          <CalendarDays size={25} />
+          <h3>No tasks for this date</h3>
+          <p>Add a task and give it this due date.</p>
+        </div>
+      )}
+    </section>
+  );
 }
 
 export default App;
